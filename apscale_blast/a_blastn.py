@@ -297,6 +297,10 @@ def remote_blast(fasta_file, n_subsets, blastn_subset_folder, blastn_exe, db_fol
 
             if os.path.isfile(download_path):
                 # Rename and move the file
+                if not download_path.exists():
+                    print('Error: Could not find download!')
+                    print(download_path)
+                    print(blastn_json_path)
                 shutil.move(download_path, blastn_json_path)
 
                 # Allow some time for the file to move before closing the browser
@@ -369,7 +373,7 @@ def blastn_parallel(fasta_file, n_subsets, blastn_subset_folder, blastn_exe, db_
             print('{}: Finished blastn for subset {}/{}.'.format(datetime.datetime.now().strftime('%H:%M:%S'), i + 1,
                                                                  n_subsets))
 
-def main(blastn_exe, query_fasta, blastn_database, project_folder, n_cores, task, subset_size, max_target_seqs, masking, headless, gui, organism_mask, include_uncultured):
+def main(blastn_exe, query_fasta, blastn_database, project_folder, n_cores, task, subset_size, max_target_seqs, masking, headless, organism_mask, include_uncultured):
     """
     Improved BLASTN function that utilizes multithreading for faster performance.
 

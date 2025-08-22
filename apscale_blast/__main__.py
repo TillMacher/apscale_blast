@@ -73,14 +73,13 @@ def main():
     remote_blast = parser.add_argument_group("Remote blast settings")
     remote_blast.add_argument('-update_taxids', '-u', action='store_true', help='Update NCBI taxid backbone.')
     remote_blast.add_argument('-organism_filter', '-f', type=str, help='Comma-separated list of taxids or full names for remote blast filtering (e.g., "Mammalia,Actinopteri").')
-    remote_blast.add_argument('-include_uncultured', action='store_true', help='Include uncultured/environmental sample sequences in the remote blast (excluded by default).')
+    remote_blast.add_argument('-include_uncultured', action='store_true', help='Include uncultured/environmental sample sequences in the remote blast [DEFAULT=True].')
 
     # === Advanced settings ===
     advanced_settings = parser.add_argument_group("Advanced settings")
     advanced_settings.add_argument('-blastn_exe', type=str, default='blastn', help='PATH to blast executable. [DEFAULT: blastn]')
-    advanced_settings.add_argument('-masking', type=str, default='Yes', help='Activate masking. [DEFAULT="Yes"]')
-    advanced_settings.add_argument('-gui', action='store_true', help='Only required for Apscale-GUI.')
-    advanced_settings.add_argument('-headless', action='store_false', help='Show/hide the chromium browser')
+    advanced_settings.add_argument('-masking', action='store_false', help='Activate masking. [DEFAULT=False]')
+    advanced_settings.add_argument('-disable_headless', action='store_false', help='Show/hide the chromium browser [DEFAULT=True]')
 
     # Parse the arguments
     args = parser.parse_args()
@@ -111,13 +110,19 @@ def main():
     project_folder = args.out  # Use the output directory specified by the user
 
     # Handle the 'blastn' command
-    headless = args.headless
+    if args.disable_headless == False:
+        headless = False
+    else:
+        headless = True
     continue_blast = False
 
     # Convert db to Path
     database = Path(args.database.strip('"'))
     if str(database) == 'remote':
         database = 'remote'
+
+    if ' ' in database:
+        print('\nError: Your database PATH contains white spaces! Please move your database to a different folder!')
 
     if database == 'remote' and not args.organism_filter:
         print('\nError: Remote blast requires at least one organism to filter for!')
@@ -150,7 +155,6 @@ def main():
                  args.max_target_seqs,
                  args.masking,
                  headless,
-                 args.gui,
                  organism_mask,
                  args.include_uncultured
                                   )
