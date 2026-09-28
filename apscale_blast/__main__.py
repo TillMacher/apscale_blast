@@ -281,8 +281,8 @@ def main():
 
     # === Filter settings ===
     filter_settings = parser.add_argument_group("Filter settings")
-    filter_settings.add_argument('-thresholds', type=str, default='97,95,90,87,85',
-                                 help='Taxonomic similarity thresholds (comma-separated). [Default: 97,95,90,87,85]')
+    filter_settings.add_argument('-thresholds', type=str, default='98,95,90,87,85',
+                                 help='Taxonomic similarity thresholds (comma-separated). [Default: 98,95,90,87,85]')
     filter_settings.add_argument('-filter', type=str, default='2',
                                  help='Filtering mode: 1 = e-value → similarity, 2 = similarity → e-value, 3 = similarity [Default: 2]')
     filter_settings.add_argument('-masking', action='store_false',
@@ -298,6 +298,9 @@ def main():
                                   help='Path to an optional secondary database for re-BLAST. Choose "boldigger" for boldigger3 assignment.')
     reblast_settings.add_argument('-reblast_sim', type=int, default=98,
                                   help='Similarity threshold for re-BLASTing hits against db2. [Default: 98]')
+    reblast_settings.add_argument('-reblast_only',
+                                  action='store_true',
+                                  help='Only perform reblast and skip initial blast.')
 
     # === Misc settings ===
     misc_settings = parser.add_argument_group("Misc")
@@ -336,7 +339,7 @@ def main():
         print('')
         return
 
-    if args.query_fasta:
+    if args.query_fasta and args.reblast_only == False:
         # Run the BLASTn function
         a_blastn(args.blastn_exe,
                  args.query_fasta.strip('"'),
@@ -354,7 +357,7 @@ def main():
     # Handle the 'filter' command
     if not os.path.isfile(Path(project_folder).joinpath('log.txt')):
         print('\nError: Could not find the BLAST results folder!')
-    else:
+    elif args.reblast_only == False:
         print('')
         # Run the filter function
         if not args.filter:

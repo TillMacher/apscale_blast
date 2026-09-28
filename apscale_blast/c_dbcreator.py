@@ -297,15 +297,36 @@ def check_blast_db(db_path):
 
 ## DIATBARCODE
 
+def diat_barcode_taxonomy(taxonomy_df):
+    all_species = taxonomy_df[taxonomy_df['rank'] == 'species']['taxon name'].unique().tolist()
+    species_dict = {}
+    TAX_COLS = ['superkingdom', 'phylum', 'class', 'order', 'family', 'genus', 'species']
+    species_tax_lookup = []
+    for species_ in all_species:
+        search = species_
+        res = [species_]
+        for tax in TAX_COLS[::-1][1:]:
+            try:
+                parent = taxonomy_df[taxonomy_df['taxon name'] == search]['parent taxon name'].values.tolist()[0]
+                res.append(parent)
+                search = parent
+            except:
+                res.append('')
+        species_tax_lookup.append(res[::-1])
+    species_tax_lookup_df = pd.DataFrame(species_tax_lookup, columns=TAX_COLS)
+    return species_tax_lookup_df
+
 def run_diat_barcode(output_path, diat_barcode_xlsx):
 
     st.write('{} : Starting to collect accession numbers from .xlsx file.'.format(datetime.datetime.now().strftime('%H:%M:%S')))
 
-    diat_barcode_df = pd.read_excel(diat_barcode_xlsx, sheet_name='diatbarcode v12').fillna('')
+    diat_barcode_df = pd.read_excel(diat_barcode_xlsx, sheet_name='sequences_info').fillna('')
+    taxonomy_df = pd.read_excel(diat_barcode_xlsx, sheet_name='taxo_RCM').fillna('')
+    species_tax_lookup_df = diat_barcode_taxonomy(taxonomy_df)
 
     st.write('{} : Writing fasta file.'.format(datetime.datetime.now().strftime('%H:%M:%S')))
 
-    fasta_file = diat_barcode_xlsx.replace('.xlsx', '.fasta.gz').replace(' ', '_')
+    fasta_file = str(diat_barcode_xlsx).replace('.xlsx', '.fasta.gz').replace(' ', '_')
     with gzip.open(fasta_file, 'wt') as f:
         for line in diat_barcode_df[['Sequence ID', 'Sequence']].values.tolist():
             if line[0] != '':
@@ -316,9 +337,15 @@ def run_diat_barcode(output_path, diat_barcode_xlsx):
     st.write('{} : Starting to generate taxonomy file.'.format(datetime.datetime.now().strftime('%H:%M:%S')))
 
     records = []
-    for line in diat_barcode_df[["Species", "Genus", "Family (following Round, Crawford & Mann 1990)", "Order (following Round, Crawford & Mann 1990)", "Class (following Round, Crawford & Mann 1990)", "Phylum (following Algaebase 2018)", "Subkingdom (following Algaebase 2018)", "Sequence ID"]].values.tolist():
+    for line in diat_barcode_df[["Species", "Sequence ID"]].values.tolist():
         if line[0] != '':
-            records.append(line[::-1])
+            acc = line[1]
+            species = line[0]
+            try:
+                species_taxonomy = species_tax_lookup_df[species_tax_lookup_df['species'] == species].values.tolist()[0]
+            except:
+                species_taxonomy = [''] * 7
+            records.append([acc] + species_taxonomy)
     records_df = pd.DataFrame(records, columns=['Accession', 'superkingdom', 'phylum', 'class', 'order', 'family', 'genus', 'species'])
 
     st.write('{} : Finished to convert accession numbers to taxonomy.'.format(datetime.datetime.now().strftime('%H:%M:%S')))
@@ -632,8 +659,11 @@ def run_silva(output_path, fasta_file, selected_tax_file):
     db_folder = Path(output_path).joinpath(f'db_{db_name}')
     # create tmp file
     temp_fasta = Path(Path(fasta_file).name.replace('.fasta.gz', '.fasta'))
-    with gzip.open(fasta_file, 'rb') as f_in, open(temp_fasta, 'wb') as f_out:
-        shutil.copyfileobj(f_in, f_out)
+    with gzip.open(fasta_file, 'rt') as f_in, open(temp_fasta, 'w') as f_out:
+        for record in SeqIO.parse(f_in, 'fasta'):
+            record.id = record.id.split('|')[0]  # example edit
+            record.description = ''  # avoid id+description duplication
+            SeqIO.write(record, f_out, 'fasta')
     # create db
     if not os.path.isdir(db_folder):
         os.mkdir(db_folder)
@@ -1189,7 +1219,7 @@ else:
                         working_dir,
                         input_folder,
                         "https://pr2-database.org/",
-                        "https://github.com/pr2database/pr2database/releases/tag/v5.1.0.0",
+                        "https://github.com/pr2database/pr2database#current-version",
                         "pr2_version_5.1.0_SSU_UTAX.fasta.gz"
                         )
 

@@ -1,0 +1,2 @@
+[console_scripts]
+apscale_blast = apscale_blast.__main__:main
