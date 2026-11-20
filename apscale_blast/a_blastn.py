@@ -28,6 +28,8 @@ import random
 import tkinter as tk
 from tkinter import simpledialog, messagebox
 from tqdm import tqdm
+from itertools import islice
+from Bio.SeqIO.FastaIO import SimpleFastaParser
 
 # Lock for thread-safe print statements
 print_lock = threading.Lock()
@@ -38,73 +40,29 @@ multiprocessing.freeze_support()
 def fasta_subset(fasta_file, subset_size):
     """
     Splits a large fasta file into smaller subsets for parallel processing.
-
-    Args:
-        fasta_file (str): Path to the input fasta file.
-        subset_size (int): Number of sequences per subset file.
-
-    Returns:
-        Path: Path to the directory containing the subsets.
     """
-    print('{}: Creating subset(s) from fasta file.'.format(datetime.datetime.now().strftime('%H:%M:%S')))
+    print(f'{datetime.datetime.now():%H:%M:%S}: Creating subset(s) from fasta file.')
 
     subset_size = int(subset_size)
     fasta_file = Path(fasta_file)
 
-    # Create a new directory for subsets
-    subset_folder = Path(fasta_file.parent).joinpath('fasta_subsets')
-    os.makedirs(subset_folder, exist_ok=True)
+    # Create a fresh directory for the subsets
+    subset_folder = fasta_file.parent / 'fasta_subsets'
+    subset_folder.mkdir(parents=True, exist_ok=True)
+    for f in subset_folder.glob('*.fasta'):
+        f.unlink()
 
-    # Delete existing subset files, if any
-    for f in glob.glob(str(subset_folder / '*.fasta')):
-        os.remove(f)
-
-    chunk_fasta_files = []
-    i, n = 1, 1
-
-    # Splitting fasta file into chunks
+    # Read subset_size sequences at a time and write each chunk in one go
+    n_subsets = 0
     with open(fasta_file) as handle:
-        for record in SeqIO.parse(handle, 'fasta'):
-            chunk_fasta = '{}/subset_{}.fasta'.format(subset_folder, i)
-            if chunk_fasta not in chunk_fasta_files:
-                chunk_fasta_files.append(chunk_fasta)
+        records = SimpleFastaParser(handle)
+        while chunk := list(islice(records, subset_size)):
+            n_subsets += 1
+            with open(subset_folder / f'subset_{n_subsets}.fasta', 'w') as out:
+                out.writelines(f'>{header}\n{seq}\n' for header, seq in chunk)
 
-            with open(chunk_fasta, 'a') as output_handle:
-                SeqIO.write(record, output_handle, 'fasta')
-
-            # Create new chunk after reaching subset_size
-            if n == subset_size:
-                n = 1
-                i += 1
-            else:
-                n += 1
-
-    print('{}: Created {} subset(s) from fasta file.'.format(datetime.datetime.now().strftime('%H:%M:%S'), i))
+    print(f'{datetime.datetime.now():%H:%M:%S}: Created {n_subsets} subset(s) from fasta file.')
     return subset_folder
-
-def accession2taxonomy(df_1, taxid_dict, col_names_2, db_name):
-    """
-    Maps accession numbers to taxonomy using a dictionary.
-
-    Args:
-        df_1 (pd.DataFrame): DataFrame containing accession data.
-        taxid_dict (dict): Dictionary mapping accessions to taxonomy.
-        col_names_2 (list): Column names for the output DataFrame.
-        db_name (str): Name of the database.
-
-    Returns:
-        pd.DataFrame: DataFrame with taxonomy information appended.
-    """
-    df_2_list = []
-    for row in df_1.values.tolist():
-        ID_name, accession = row[0], row[1]
-        evalue, similarity = row[-1], row[-2]
-
-        taxonomy = taxid_dict.get(accession, ['NoMatch'] * 7)
-        df_2_list.append([ID_name] + taxonomy + [similarity, evalue])
-
-    df_2 = pd.DataFrame(df_2_list, columns=col_names_2)
-    return df_2
 
 def json_to_csv(json_data, blastn_json_path):
     """
@@ -233,6 +191,14 @@ def main(blastn_exe, query_fasta, blastn_database, project_folder, n_cores, task
         subset_size (int): Size of fasta file subsets.
         max_target_seqs (int): Maximum target sequences to report.
     """
+    # Check if the accession table was already written
+    filename = Path(query_fasta).stem.replace('.', '_').replace(' ', '_')
+    accession_table = project_folder.joinpath('{}.parquet.snappy'.format(filename))
+
+    if accession_table.exists():
+        print(f'{datetime.datetime.now().strftime('%H:%M:%S')}: Skipping taxonomic assignment (already done).')
+        return
+
     # Split fasta file into subsets
     subset_folder = fasta_subset(query_fasta, subset_size)
 
@@ -247,8 +213,6 @@ def main(blastn_exe, query_fasta, blastn_database, project_folder, n_cores, task
         'Somewhat similar sequences (blastn)': 'blastn'
     }
     task = task_mapping.get(task, task)
-
-    filename = Path(query_fasta).stem.replace('.', '_').replace(' ', '_')
 
     print('{}: Starting {} for \'{}\''.format(datetime.datetime.now().strftime('%H:%M:%S'), task, filename))
 
@@ -287,7 +251,7 @@ def main(blastn_exe, query_fasta, blastn_database, project_folder, n_cores, task
     df['Sequence ID'] = df['Sequence ID'].astype(str)
 
     table = pa.Table.from_pandas(df)
-    pq.write_table(table, project_folder.joinpath('{}.parquet.snappy'.format(filename)), compression='snappy')
+    pq.write_table(table, accession_table, compression='snappy')
 
     # Remove temporary subset fasta folder
     shutil.rmtree(subset_folder)

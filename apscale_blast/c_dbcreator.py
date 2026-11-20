@@ -3,6 +3,7 @@ import streamlit as st
 from streamlit_extras.colored_header import colored_header
 from streamlit_extras.stylable_container import stylable_container
 from streamlit_file_browser import st_file_browser
+from Bio.SeqIO.FastaIO import SimpleFastaParser
 import datetime
 import glob
 import gzip
@@ -38,16 +39,138 @@ from functools import lru_cache
 
 # suppress ncbi warning
 import warnings
+
 warnings.filterwarnings("ignore", message=r"taxid \d+ was translated into \d+")
 
 ### Set page config first
 st.set_page_config(page_title="APSCALE-blast Database Creator", page_icon="🧬", layout="wide")
 path_to_apscale_blast = Path(__file__).resolve().parent
 
+## CITATION AND LICENSE TEXTS
+## these are written to a citation.txt file in each database folder
+
+citation_diat_barcode = """Diat.barcode (rbcL reference library for diatoms)
+
+        Please cite:
+        Rimet F, Gusev E, Kahlert M, et al. (2019) Diat.barcode, an open-access curated barcode library for diatoms.
+        Scientific Reports 9: 15116. https://doi.org/10.1038/s41598-019-51500-6
+
+        Dataset:
+        Rimet F, et al. Diat.barcode. Recherche Data Gouv. https://doi.org/10.15454/TOMBYZ
+
+        License:
+        Open access. Please check the dataset page (https://doi.org/10.15454/TOMBYZ) for the license of the release you used.
+        """
+
+citation_midori2 = """MIDORI2 (mitochondrial reference database for eukaryotes)
+
+        Please cite:
+        Leray M, Knowlton N, Machida RJ (2022) MIDORI2: A collection of quality controlled, preformatted, and regularly
+        updated reference databases for taxonomic assignment of eukaryotic mitochondrial sequences.
+        Environmental DNA 4(4): 894-907. https://doi.org/10.1002/edn3.303
+
+        Please also report the GenBank release of the MIDORI2 file you used (e.g. GB266).
+
+        License:
+        Please check https://www.reference-midori.info/ for the terms of use.
+        """
+
+citation_pr2 = """PR2 (Protist Ribosomal Reference database)
+
+        Please cite:
+        Guillou L, Bachar D, Audic S, et al. (2013) The Protist Ribosomal Reference database (PR2): a catalog of
+        unicellular eukaryote Small Sub-Unit rRNA sequences with curated taxonomy.
+        Nucleic Acids Research 41(D1): D597-D604. https://doi.org/10.1093/nar/gks1160
+
+        Please also report the PR2 version you used (e.g. 5.1.0).
+
+        License:
+        Please check https://pr2-database.org/ for the terms of use.
+        """
+
+citation_silva = """SILVA (ribosomal RNA database)
+
+        Please cite:
+        Quast C, Pruesse E, Yilmaz P, et al. (2013) The SILVA ribosomal RNA gene database project: improved data
+        processing and web-based tools. Nucleic Acids Research 41(D1): D590-D596. https://doi.org/10.1093/nar/gks1219
+
+        Please also report the SILVA release you used (e.g. 138.2).
+
+        License:
+        Creative Commons Attribution 4.0 International (CC BY 4.0), https://creativecommons.org/licenses/by/4.0/
+        SILVA must be credited as the original author.
+        """
+
+citation_trnl = """trnL reference database (CRUX, Anacapa Toolkit, CALeDNA)
+
+        Please cite:
+        Curd EE, Gold Z, Kandlikar GS, et al. (2019) Anacapa Toolkit: An environmental DNA toolkit for processing
+        multilocus metabarcode datasets. Methods in Ecology and Evolution 10: 1469-1475. https://doi.org/10.1111/2041-210X.13214
+
+        Database source: https://ucedna.com/reference-databases-for-metabarcoding
+
+        License:
+        Please check https://ucedna.com/reference-databases-for-metabarcoding for the terms of use.
+        """
+
+citation_its2 = """ITS2 vascular plant reference database
+
+        Please cite:
+        Quaresma A, Ankenbrand MJ, Yadro Garcia CA, et al. (2024) Semi-automated sequence curation for reliable
+        reference datasets in ITS2 vascular plant DNA (meta-)barcoding. Scientific Data 11: 129. https://doi.org/10.1038/s41597-024-02962-5
+
+        Dataset (global ITS2 dataset): https://doi.org/10.5281/zenodo.7968519
+
+        License:
+        Please check the Zenodo record (https://doi.org/10.5281/zenodo.7968519) for the license.
+        """
+
+citation_unite = """UNITE (fungal and eukaryotic ITS reference database)
+
+        Please cite:
+        Abarenkov K, Nilsson RH, Larsson K-H, et al. (2024) The UNITE database for molecular identification and
+        taxonomic communication of fungi and other eukaryotes: sequences, taxa and classifications reconsidered.
+        Nucleic Acids Research 52(D1): D791-D797. https://doi.org/10.1093/nar/gkad1039
+
+        Please also cite the DOI of the UNITE release you used (see https://unite.ut.ee/repository.php).
+
+        License:
+        Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0), https://creativecommons.org/licenses/by-sa/4.0/
+        """
+
+citation_bold = """BOLD Systems (Barcode of Life Data System)
+
+        Please cite:
+        Ratnasingham S, Wei C, Chan D, Agda J, Agda J, Ballesteros-Mejia L, Ait Boutou H, El Bastami Z M, Ma E, Manjunath
+        R, Rea D, Ho C, Telfer A, McKeowan J, Rahulan M, Steinke C, Dorsheimer J, Milton M, Hebert PDN (2024).
+        BOLD v4: A Centralized Bioinformatics Platform for DNA-Based Biodiversity Data. In DNA Barcoding: Methods and
+        Protocols, pp. 403–441. Chapter 26. New York, NY: Springer US, 2024.
+
+        Please also cite the BOLD data package you used, including its DOI and access date, e.g.:
+        "BOLD Public data package (DD-Mon-YYYY). https://doi.org/10.5883/DP-xxxxxx. Accessed YYYY-MM-DD via boldsystems.org."
+        (see https://boldsystems.org/about/citation/)
+
+        License:
+        Please check the data package page on boldsystems.org for the license.
+        """
+
+
+def write_citation(db_folder, citation):
+    # write a citation.txt file into the database folder
+    citation_file = Path(db_folder).joinpath('citation.txt')
+    with open(citation_file, 'w') as f:
+        f.write(f'Database created with APSCALE-blast dbcreator on {datetime.date.today()}\n\n')
+        if citation == '':
+            f.write('No citation or license information provided.\n')
+        else:
+            f.write(citation)
+
+
 ## accession to taxid conversion (or update the existing file)
 
 # Initialize ete3 NCBI database
 ncbi = NCBITaxa()
+
 
 # https://ftp.ncbi.nlm.nih.gov/pub/taxonomy/accession2taxid/nucl_gb.accession2taxid.gz
 # https://ftp.ncbi.nlm.nih.gov/pub/taxonomy/accession2taxid/nucl_wgs.accession2taxid.gz
@@ -79,8 +202,8 @@ def create_acc2taxid_db(gz_path, db_path):
 
     conn.close()
 
-def get_taxonomy_from_accession_ete3(accession, db_path):
 
+def get_taxonomy_from_accession_ete3(accession, db_path):
     def get_taxid_from_sqlite(accession, db_path):
         conn = sqlite3.connect(db_path)
         c = conn.cursor()
@@ -128,6 +251,7 @@ def get_taxonomy_from_accession_ete3(accession, db_path):
     except Exception as e:
         return {'Accession': accession, 'Error': str(e)}
 
+
 ## NCBI ACCESSION CONVERTER
 
 def accession_to_taxonomy(accession):
@@ -171,8 +295,8 @@ def accession_to_taxonomy(accession):
 
     return result
 
-def make_blast_db(fasta_file, db_folder, title="db", dbtype="nucl"):
 
+def make_blast_db(fasta_file, db_folder, title="db", dbtype="nucl"):
     fasta_file = Path(fasta_file)
     db_folder = Path(db_folder)
     db_folder.parent.mkdir(parents=True, exist_ok=True)
@@ -224,6 +348,7 @@ def make_blast_db(fasta_file, db_folder, title="db", dbtype="nucl"):
         ]
         subprocess.run(cmd, check=True)
 
+
 def get_fasta_headers(fasta_file):
     fasta_file = Path(fasta_file)
     open_func = gzip.open if fasta_file.suffix == ".gz" else open
@@ -232,9 +357,10 @@ def get_fasta_headers(fasta_file):
     with open_func(fasta_file, "rt") as fh:
         for line in fh:
             if line.startswith(">"):
-                headers.append(line[1:].strip())
+                headers.append(line[1:].split()[0])
 
     return headers
+
 
 def collect_accession_taxonomy(fasta_file, accession2taxonomy_parquet):
     TAX_COLS = [
@@ -258,11 +384,21 @@ def collect_accession_taxonomy(fasta_file, accession2taxonomy_parquet):
         accession_df['Accession'].isin(cached)
     ]
 
+    if len(missing) > 0 and Entrez.email == None:
+        st.error('Please enter your email address for NCBI first.')
+        st.stop()
+
     new_rows = []
+    failed = []
     for acc in stqdm(missing, desc="Fetching taxonomy"):
-        row = accession_to_taxonomy(acc)
-        if row:
+        try:
+            row = accession_to_taxonomy(acc)
             new_rows.append(row)
+        except Exception:
+            failed.append(acc)
+
+    if len(failed) > 0:
+        st.warning('{} accession numbers could not be fetched from NCBI: {}'.format(len(failed), failed[:20]))
 
     new_df = pd.DataFrame(new_rows, columns=TAX_COLS)
 
@@ -273,6 +409,7 @@ def collect_accession_taxonomy(fasta_file, accession2taxonomy_parquet):
 
     return out_df
 
+
 def check_ncbi():
     try:
         ncbi = NCBITaxa()
@@ -280,6 +417,7 @@ def check_ncbi():
         return True
     except Exception:
         return False
+
 
 def check_blast_db(db_path):
     st.write('{}: Validating database.'.format(datetime.datetime.now().strftime('%H:%M:%S')))
@@ -290,10 +428,37 @@ def check_blast_db(db_path):
             stderr=subprocess.DEVNULL,
             check=True
         )
-        st.balloons()
-        st.write('{}: Finished building database.'.format(datetime.datetime.now().strftime('%H:%M:%S')))
-    except:
-        st.error('{}: Database could not be verified!'.format(datetime.datetime.now().strftime('%H:%M:%S')))
+        taxonomy_file = db_path.parent / 'db_taxonomy.parquet.snappy'
+        taxonomy_df = pd.read_parquet(taxonomy_file)
+        command = f'blastdbcmd -db "{db_path}" -entry all -outfmt "%a %t" | head -n 100'
+        out = subprocess.run(command, shell=True, capture_output=True, text=True).stdout
+        rows = [line.split(" ", 1) for line in out.splitlines()]
+
+        missing = []
+        duplicated = []
+        for row in stqdm(rows):
+            accession = row[-1]
+            n = len(taxonomy_df[taxonomy_df['Accession'] == accession])
+            if n == 0:
+                missing.append(accession)
+            elif n > 1:
+                duplicated.append(accession)
+
+        if len(missing) == 0 and len(duplicated) == 0:
+            st.balloons()
+            st.write('{}: Finished building database.'.format(datetime.datetime.now().strftime('%H:%M:%S')))
+        else:
+            if len(missing) > 0:
+                st.error('{}: Failed building database: {} of {} accession numbers not found in taxonomy file.'.format(
+                    datetime.datetime.now().strftime('%H:%M:%S'), len(missing), len(rows)))
+                st.write('Missing:', missing)
+            if len(duplicated) > 0:
+                st.warning('{}: {} accession numbers occur more than once in taxonomy file.'.format(
+                    datetime.datetime.now().strftime('%H:%M:%S'), len(duplicated)))
+                st.write('Duplicated:', duplicated)
+    except Exception as e:
+        st.error('{}: Database could not be verified! ({})'.format(datetime.datetime.now().strftime('%H:%M:%S'), e))
+
 
 ## DIATBARCODE
 
@@ -316,9 +481,10 @@ def diat_barcode_taxonomy(taxonomy_df):
     species_tax_lookup_df = pd.DataFrame(species_tax_lookup, columns=TAX_COLS)
     return species_tax_lookup_df
 
-def run_diat_barcode(output_path, diat_barcode_xlsx):
 
-    st.write('{} : Starting to collect accession numbers from .xlsx file.'.format(datetime.datetime.now().strftime('%H:%M:%S')))
+def run_diat_barcode(output_path, diat_barcode_xlsx, citation=citation_diat_barcode):
+    st.write('{} : Starting to collect accession numbers from .xlsx file.'.format(
+        datetime.datetime.now().strftime('%H:%M:%S')))
 
     diat_barcode_df = pd.read_excel(diat_barcode_xlsx, sheet_name='sequences_info').fillna('')
     taxonomy_df = pd.read_excel(diat_barcode_xlsx, sheet_name='taxo_RCM').fillna('')
@@ -346,9 +512,12 @@ def run_diat_barcode(output_path, diat_barcode_xlsx):
             except:
                 species_taxonomy = [''] * 7
             records.append([acc] + species_taxonomy)
-    records_df = pd.DataFrame(records, columns=['Accession', 'superkingdom', 'phylum', 'class', 'order', 'family', 'genus', 'species'])
+    records_df = pd.DataFrame(records,
+                              columns=['Accession', 'superkingdom', 'phylum', 'class', 'order', 'family', 'genus',
+                                       'species'])
 
-    st.write('{} : Finished to convert accession numbers to taxonomy.'.format(datetime.datetime.now().strftime('%H:%M:%S')))
+    st.write(
+        '{} : Finished to convert accession numbers to taxonomy.'.format(datetime.datetime.now().strftime('%H:%M:%S')))
     st.write('{} : Starting to create database.'.format(datetime.datetime.now().strftime('%H:%M:%S')))
 
     # create database
@@ -374,11 +543,13 @@ def run_diat_barcode(output_path, diat_barcode_xlsx):
 
     ## zip the folder
     output = Path(output_path).joinpath(f'db_{db_name}')
+    write_citation(output, citation)
     shutil.make_archive(output, 'zip', output)
 
     st.write('{} : Finished database creation.'.format(datetime.datetime.now().strftime('%H:%M:%S')))
 
     return db_folder
+
 
 ## MIDORI2
 
@@ -398,11 +569,13 @@ def midori2_taxonomy(fasta_file):
                     taxonomy.append(' '.join(i.split('_')[:2]))
             all_accession_numbers.append([accession] + taxonomy)
 
-    accession_df = pd.DataFrame(all_accession_numbers, columns=['Accession', 'superkingdom','phylum', 'class', 'order', 'family', 'genus', 'species'])
+    accession_df = pd.DataFrame(all_accession_numbers,
+                                columns=['Accession', 'superkingdom', 'phylum', 'class', 'order', 'family', 'genus',
+                                         'species'])
     return accession_df
 
-def run_midori2(output_path, fasta_file):
 
+def run_midori2(output_path, fasta_file, citation=citation_midori2):
     st.write('{} : Starting to collect taxonomy from fasta files.'.format(datetime.datetime.now().strftime('%H:%M:%S')))
 
     ## collect accession numbers
@@ -433,11 +606,13 @@ def run_midori2(output_path, fasta_file):
 
     ## zip the folder
     output = Path(output_path).joinpath(f'db_{db_name}')
+    write_citation(output, citation)
     shutil.make_archive(output, 'zip', output)
 
     st.write('{} : Finished database creation.'.format(datetime.datetime.now().strftime('%H:%M:%S')))
 
     return db_folder
+
 
 ## PR2
 
@@ -448,7 +623,7 @@ def pr2_taxonomy(fasta_file):
         sequences = SeqIO.parse(StringIO(data), 'fasta')
         for record in sequences:
             accession = record.id
-            taxonomy_dict = {i.split(':')[0]:i.split(':')[1] for i in record.id.split(';')[1].split('=')[1].split(',')}
+            taxonomy_dict = {i.split(':')[0]: i.split(':')[1] for i in record.id.split(';')[1].split('=')[1].split(',')}
             taxonomy = []
             for taxon in ['k', 'p', 'c', 'o', 'f', 'g', 's']:
                 try:
@@ -457,11 +632,13 @@ def pr2_taxonomy(fasta_file):
                     taxonomy.append('')
             all_accession_numbers.append([accession] + taxonomy)
 
-    accession_df = pd.DataFrame(all_accession_numbers, columns=['Accession', 'superkingdom','phylum', 'class', 'order', 'family', 'genus', 'species'])
+    accession_df = pd.DataFrame(all_accession_numbers,
+                                columns=['Accession', 'superkingdom', 'phylum', 'class', 'order', 'family', 'genus',
+                                         'species'])
     return accession_df
 
-def run_pr2(output_path, fasta_file):
 
+def run_pr2(output_path, fasta_file, citation=citation_pr2):
     st.write('{} : Starting to collect taxonomy from fasta files.'.format(datetime.datetime.now().strftime('%H:%M:%S')))
 
     ## collect accession numbers
@@ -492,11 +669,13 @@ def run_pr2(output_path, fasta_file):
 
     ## zip the folder
     output = Path(output_path).joinpath(f'db_{db_name}')
+    write_citation(output, citation)
     shutil.make_archive(output, 'zip', output)
 
     st.write('{} : Finished database creation.'.format(datetime.datetime.now().strftime('%H:%M:%S')))
 
     return db_folder
+
 
 ## trl
 
@@ -511,12 +690,16 @@ def trnl_taxonomy(fasta_file, taxonomy_df):
 
     return accession_df
 
-def run_trnl(output_path, fasta_file):
 
+def run_trnl(output_path, fasta_file, citation=citation_trnl):
     st.write('{} : Starting to collect taxonomy from fasta files.'.format(datetime.datetime.now().strftime('%H:%M:%S')))
 
     ## collect accession numbers
-    taxonomy_df = pd.read_parquet(st.session_state['accession2taxonomy_parquet'])
+    ## uses the accession-to-taxonomy file if it exists, missing accessions are fetched from NCBI
+    accession2taxonomy_parquet = st.session_state['accession2taxonomy_parquet']
+    taxonomy_df = collect_accession_taxonomy(fasta_file, accession2taxonomy_parquet)
+    # save the updated file, so the next run does not need to fetch them again
+    taxonomy_df.to_parquet(accession2taxonomy_parquet)
     accession_df = trnl_taxonomy(fasta_file, taxonomy_df)
 
     st.write('{} : Starting to create database.'.format(datetime.datetime.now().strftime('%H:%M:%S')))
@@ -544,11 +727,13 @@ def run_trnl(output_path, fasta_file):
 
     ## zip the folder
     output = Path(output_path).joinpath(f'db_{db_name}')
+    write_citation(output, citation)
     shutil.make_archive(output, 'zip', output)
 
     st.write('{} : Finished database creation.'.format(datetime.datetime.now().strftime('%H:%M:%S')))
 
     return db_folder
+
 
 ## UNITE
 
@@ -559,7 +744,7 @@ def unite_taxonomy(fasta_file):
         sequences = SeqIO.parse(StringIO(data), 'fasta')
         for record in sequences:
             accession = record.id
-            taxonomy_dict = {i.split('__')[0]:i.split('__')[1] for i in record.id.split('|')[4].split(';')}
+            taxonomy_dict = {i.split('__')[0]: i.split('__')[1] for i in record.id.split('|')[4].split(';')}
             taxonomy = []
             for taxon in ['k', 'p', 'c', 'o', 'f', 'g', 's']:
                 try:
@@ -568,11 +753,13 @@ def unite_taxonomy(fasta_file):
                     taxonomy.append('')
             all_accession_numbers.append([accession] + taxonomy)
 
-    accession_df = pd.DataFrame(all_accession_numbers, columns=['Accession', 'superkingdom','phylum', 'class', 'order', 'family', 'genus', 'species'])
+    accession_df = pd.DataFrame(all_accession_numbers,
+                                columns=['Accession', 'superkingdom', 'phylum', 'class', 'order', 'family', 'genus',
+                                         'species'])
     return accession_df
 
-def run_unite(output_path, fasta_file):
 
+def run_unite(output_path, fasta_file, citation=citation_unite):
     st.write('{} : Starting to collect taxonomy from fasta files.'.format(datetime.datetime.now().strftime('%H:%M:%S')))
 
     ## collect accession numbers
@@ -603,11 +790,13 @@ def run_unite(output_path, fasta_file):
 
     ## zip the folder
     output = Path(output_path).joinpath(f'db_{db_name}')
+    write_citation(output, citation)
     shutil.make_archive(output, 'zip', output)
 
     st.write('{} : Finished database creation.'.format(datetime.datetime.now().strftime('%H:%M:%S')))
 
     return db_folder
+
 
 ## SILVA
 
@@ -625,11 +814,13 @@ def build_taxonomy_lookup(taxids, ncbi):
     names = ncbi.get_taxid_translator(list(all_lineage_taxids)) if all_lineage_taxids else {}
     return lineages, ranks, names
 
+
 def silva_taxonomy(taxid_df, acc_col='Accession', taxid_col='taxid', ncbi=ncbi):
     TARGET_RANKS = ['superkingdom', 'phylum', 'class', 'order', 'family', 'genus', 'species']
     columns = ['Accession'] + TARGET_RANKS
     taxid_series = pd.to_numeric(taxid_df[taxid_col], errors='coerce')
     lineages, ranks, names = build_taxonomy_lookup(taxid_series.dropna().unique(), ncbi)
+
     @lru_cache(maxsize=None)
     def resolve(taxid):
         lineage = lineages.get(taxid)
@@ -637,18 +828,24 @@ def silva_taxonomy(taxid_df, acc_col='Accession', taxid_col='taxid', ncbi=ncbi):
             return tuple(f'Unknown {r}' for r in TARGET_RANKS)
         rank_map = {ranks[t]: names[t] for t in lineage if t in ranks and t in names}
         return tuple(rank_map.get(r, '') for r in TARGET_RANKS)
+
     records = [
         (acc, *(resolve(int(taxid)) if pd.notna(taxid) else tuple(f'Unknown {r}' for r in TARGET_RANKS)))
         for acc, taxid in zip(taxid_df[acc_col], taxid_series)
     ]
     return pd.DataFrame.from_records(records, columns=columns)
 
-def run_silva(output_path, fasta_file, selected_tax_file):
+
+def run_silva(output_path, fasta_file, selected_tax_file, citation=citation_silva):
+    # fasta_file = Path('/Users/tillmacher/Desktop/APSCALE_projects/APSCALE_databases_input/SILVA_144_SSURef_tax_silva_trunc.fasta.gz')
+    # selected_tax_file = Path('/Users/tillmacher/Downloads/taxmap_slv_ssu_parc_144.txt.gz')
+    # output_path = Path('/Users/tillmacher/Desktop/APSCALE_projects/APSCALE_databases')
 
     ## collect taxonomy
     st.write('{} : Starting to collect taxonomy from fasta files.'.format(datetime.datetime.now().strftime('%H:%M:%S')))
-    taxid_df = pd.read_csv(selected_tax_file, sep="\t", header=None)
-    taxid_df.columns = ['Accession', 'taxid']
+    taxid_df = pd.read_csv(selected_tax_file, sep="\t")
+    taxid_df = taxid_df[['primaryAccession', 'taxid']]
+    taxid_df.rename(columns={'primaryAccession': 'Accession'}, inplace=True)
     accession_df = silva_taxonomy(taxid_df)
 
     ## collect accession numbers
@@ -661,8 +858,8 @@ def run_silva(output_path, fasta_file, selected_tax_file):
     temp_fasta = Path(Path(fasta_file).name.replace('.fasta.gz', '.fasta'))
     with gzip.open(fasta_file, 'rt') as f_in, open(temp_fasta, 'w') as f_out:
         for record in SeqIO.parse(f_in, 'fasta'):
-            record.id = record.id.split('|')[0]  # example edit
-            record.description = ''  # avoid id+description duplication
+            record.id = record.id.split('.')[0]
+            record.description = ''
             SeqIO.write(record, f_out, 'fasta')
     # create db
     if not os.path.isdir(db_folder):
@@ -680,11 +877,13 @@ def run_silva(output_path, fasta_file, selected_tax_file):
 
     ## zip the folder
     output = Path(output_path).joinpath(f'db_{db_name}')
+    write_citation(output, citation)
     shutil.make_archive(output, 'zip', output)
 
     st.write('{} : Finished database creation.'.format(datetime.datetime.now().strftime('%H:%M:%S')))
 
     return db_folder
+
 
 # CUSTOM APSCALE DB
 
@@ -701,19 +900,20 @@ def custom_db_taxonomy(fasta_file, taxonomy_df):
             taxonomy_res.append(taxonomy)
         elif desc.startswith('Accession;;'):
             accession = desc.split(';;')[1]
-            taxonomy = taxonomy_df[taxonomy_df["Accession"]==accession].head(1).values.tolist()[0]
+            taxonomy = taxonomy_df[taxonomy_df["Accession"] == accession].head(1).values.tolist()[0]
             taxonomy_res.append(taxonomy)
     accession_df = pd.DataFrame(taxonomy_res, columns=taxonomy_df.columns)
     return accession_df
 
-def run_custom_db(output_path, input_file, suffix):
 
+def run_custom_db(output_path, input_file, suffix, citation=''):
     if suffix == '.xlsx':
         st.write('{} : Starting to collect accession numbers from .xlsx file.'.format(
             datetime.datetime.now().strftime('%H:%M:%S')))
 
         custom_barcodes_df = pd.read_excel(input_file).fillna('')
-        records_df = custom_barcodes_df[['Accession', 'superkingdom', 'phylum', 'class', 'order', 'family', 'genus', 'species']]
+        records_df = custom_barcodes_df[
+            ['Accession', 'superkingdom', 'phylum', 'class', 'order', 'family', 'genus', 'species']]
 
         # check if accession numbers are unique
         if records_df['Accession'].duplicated().any() == True:
@@ -756,6 +956,7 @@ def run_custom_db(output_path, input_file, suffix):
 
         ## zip the folder
         output = Path(output_path).joinpath(f'db_{db_name}')
+        write_citation(output, citation)
         shutil.make_archive(output, 'zip', output)
 
         st.write('{} : Finished database creation.'.format(datetime.datetime.now().strftime('%H:%M:%S')))
@@ -763,7 +964,8 @@ def run_custom_db(output_path, input_file, suffix):
         return db_folder
 
     elif suffix == '.fasta':
-        st.write('{} : Starting to collect taxonomy from fasta files.'.format(datetime.datetime.now().strftime('%H:%M:%S')))
+        st.write(
+            '{} : Starting to collect taxonomy from fasta files.'.format(datetime.datetime.now().strftime('%H:%M:%S')))
 
         ## collect accession numbers
         taxonomy_df = pd.read_parquet(st.session_state['accession2taxonomy_parquet'])
@@ -787,6 +989,7 @@ def run_custom_db(output_path, input_file, suffix):
 
         ## zip the folder
         output = Path(output_path).joinpath(f'db_{db_name}')
+        write_citation(output, citation)
         shutil.make_archive(output, 'zip', output)
 
         st.write('{} : Finished database creation.'.format(datetime.datetime.now().strftime('%H:%M:%S')))
@@ -796,87 +999,213 @@ def run_custom_db(output_path, input_file, suffix):
     else:
         st.warning('Please import an uncompressed .fasta or .xlsx file!')
 
-# BOLDsystem DB
-def run_BOLD(output_path, parquet_file):
 
+# BOLDsystem DB
+
+def make_blast_db(temp_fasta, db_folder, citation):
+    # build the blast db from the fasta, then remove the fasta, add the citation and zip the folder
+    command = f'makeblastdb -in "{temp_fasta}" -title db -dbtype nucl -out "{db_folder.joinpath("db")}"'
+    result = subprocess.run(command, shell=True)
+    if result.returncode != 0:
+        st.write(f'{datetime.datetime.now():%H:%M:%S} : makeblastdb failed for {db_folder.name} (exit code {result.returncode}).')
+
+    if temp_fasta.exists():
+        os.remove(temp_fasta)
+
+    write_citation(db_folder, citation)
+    shutil.make_archive(db_folder, 'zip', db_folder)
+
+
+# BOLDsystem DB
+def run_BOLD(output_path, parquet_file, citation=citation_bold):
     st.write(f'{datetime.datetime.now():%H:%M:%S} : Reading sequences from BOLD snapshot.')
+
+    # Markers that get their own database: name -> parts of the BOLD "marker_code" (matched with "contains")
+    BOLD_MARKERS = {
+        '12S': ['12S'],
+        '16S': ['16S'],
+        '18S': ['18S'],
+        '23S': ['23S'],
+        'COI': ['COI-3P', 'COI-5P', 'COI5P3P'],
+        'CYTB': ['CYTB'],
+        'D-loop': ['D-loop'],
+        'H3': ['H3'],
+        'H4': ['H4'],
+        'ITS': ['ITS'],  # ITS, ITS1, ITS2
+        'ND': ['ND1', 'ND2', 'ND3', 'ND4', 'ND5', 'ND6'],  # ND4 also matches ND4L
+        'matK': ['matK'],
+        'rbcL': ['rbcL'],
+        'trnK': ['trnK'],
+    }
+
+    # Marker codes containing these are excluded from all databases (pseudogenes)
+    BOLD_EXCLUDE = ['-like', '-NUMT']
 
     # only pull the columns we actually use out of the parquet file (column pruning) --
     # this cuts I/O and memory since BOLD snapshots typically carry many more columns than this
-    columns = ['processid', 'kingdom', 'phylum', 'class', 'order', 'family', 'genus', 'species', 'nuc']
-    taxonomy_columns = [c for c in columns if c != 'nuc']
+    columns = ['processid', 'marker_code', 'kingdom', 'phylum', 'class', 'order', 'family', 'genus', 'species', 'nuc']
+    taxonomy_columns = [c for c in columns if c not in ['nuc', 'marker_code']]
 
     batch_size = 10_000
     pf = pq.ParquetFile(parquet_file)
     n_batches = math.ceil(pf.metadata.num_rows / batch_size)
 
-    # set up output locations up front so we can stream results straight to disk
+    # one database with all markers ("all") + one database per marker
     db_name = Path(parquet_file).name.replace('.parquet', '').replace('.', '_')
-    db_folder = Path(output_path).joinpath(f'db_{db_name}')
-    os.makedirs(db_folder, exist_ok=True)
-    taxonomy_file_snappy = db_folder.joinpath('db_taxonomy.parquet.snappy')
-    temp_fasta = Path(Path(parquet_file).name.replace('.parquet', '.fasta'))
+    db_names = ['all'] + list(BOLD_MARKERS.keys())
+
+    db_folders = {}
+    temp_fastas = {}
+    fasta_handles = {}
+    parquet_writers = {}
+    n_written = {}
+    for name in db_names:
+        if name == 'all':
+            db_folders[name] = Path(output_path).joinpath(f'db_{db_name}')
+        else:
+            db_folders[name] = Path(output_path).joinpath(f'db_{db_name}_{name}')
+        os.makedirs(db_folders[name], exist_ok=True)
+        temp_fastas[name] = Path(output_path).joinpath(f'tmp_{db_name}_{name}.fasta')
+        fasta_handles[name] = open(temp_fastas[name], 'w')
+        parquet_writers[name] = None
+        n_written[name] = 0
+
+    # regex patterns for "contains" (case-insensitive)
+    marker_patterns = {name: '|'.join(re.escape(p) for p in parts) for name, parts in BOLD_MARKERS.items()}
+    exclude_pattern = '|'.join(re.escape(p) for p in BOLD_EXCLUDE)
 
     n_sequences = 0
     n_dropped_no_species = 0
-    parquet_writer = None
+    n_dropped_excluded = 0
     try:
-        with open(temp_fasta, 'w') as f_out:
-            for batch in stqdm(pf.iter_batches(batch_size=batch_size, columns=columns),
-                               total=n_batches, desc="Reading & processing BOLD snapshot"):
-                chunk_df = batch.to_pandas().fillna("")
-                n_sequences += len(chunk_df)
+        for batch in stqdm(pf.iter_batches(batch_size=batch_size, columns=columns),
+                           total=n_batches, desc="Reading & processing BOLD snapshot"):
+            chunk_df = batch.to_pandas().fillna("")
+            n_sequences += len(chunk_df)
 
-                has_species = chunk_df['species'].str.strip() != ''
-                n_dropped_no_species += int((~has_species).sum())
-                chunk_df = chunk_df.loc[has_species]
+            # remove records without species-level taxonomy
+            has_species = chunk_df['species'].str.strip() != ''
+            n_dropped_no_species += int((~has_species).sum())
+            chunk_df = chunk_df.loc[has_species]
 
-                if chunk_df.empty:
+            # remove pseudogenes ("-like", "-NUMT")
+            excluded = chunk_df['marker_code'].str.contains(exclude_pattern, case=False, regex=True)
+            n_dropped_excluded += int(excluded.sum())
+            chunk_df = chunk_df.loc[~excluded]
+
+            if chunk_df.empty:
+                continue
+
+            for name in db_names:
+                # all records, or only the records of this marker
+                if name == 'all':
+                    sub_df = chunk_df
+                else:
+                    is_marker = chunk_df['marker_code'].str.contains(marker_patterns[name], case=False, regex=True)
+                    sub_df = chunk_df.loc[is_marker]
+                if sub_df.empty:
                     continue
 
                 # stream this batch's taxonomy columns straight into the output parquet file
                 taxonomy_table = pa.Table.from_pandas(
-                    chunk_df[taxonomy_columns].rename(columns={'processid': 'Accession', 'kingdom': 'superkingdom'}),
+                    sub_df[taxonomy_columns].rename(columns={'processid': 'Accession', 'kingdom': 'superkingdom'}),
                     preserve_index=False
                 )
-                if parquet_writer is None:
+                if parquet_writers[name] is None:
                     # schema is only known once we see the first (non-empty) batch
-                    parquet_writer = pq.ParquetWriter(taxonomy_file_snappy, taxonomy_table.schema, compression='snappy')
-                parquet_writer.write_table(taxonomy_table)
+                    taxonomy_file_snappy = db_folders[name].joinpath('db_taxonomy.parquet.snappy')
+                    parquet_writers[name] = pq.ParquetWriter(taxonomy_file_snappy, taxonomy_table.schema, compression='snappy')
+                parquet_writers[name].write_table(taxonomy_table)
 
-                # vectorized fasta building (pandas .str ops) instead of a per-row Python loop --
-                # same filter as before (strip gap chars, keep sequences longer than 50bp)
-                sequences = chunk_df['nuc'].str.strip('-')
+                # fasta: strip gap chars, keep sequences longer than 50bp
+                sequences = sub_df['nuc'].str.strip('-')
                 keep = sequences.str.len() > 50
-                fasta_lines = '>' + chunk_df.loc[keep, 'processid'] + '\n' + sequences[keep] + '\n'
-                f_out.writelines(fasta_lines)
+                fasta_lines = '>' + sub_df.loc[keep, 'processid'] + '\n' + sequences[keep] + '\n'
+                fasta_handles[name].writelines(fasta_lines)
+                n_written[name] += int(keep.sum())
     finally:
-        if parquet_writer is not None:
-            parquet_writer.close()
+        for name in db_names:
+            fasta_handles[name].close()
+            if parquet_writers[name] is not None:
+                parquet_writers[name].close()
 
     print(f'{datetime.datetime.now():%H:%M:%S}: Dropped {n_dropped_no_species:,} records with no species-level taxonomy.')
+    print(f'{datetime.datetime.now():%H:%M:%S}: Dropped {n_dropped_excluded:,} records with "-like" or "-NUMT" marker codes.')
     st.write(f'{datetime.datetime.now():%H:%M:%S} : Collected {n_sequences:,} sequences from BOLD snapshot.')
-    st.write(f'{datetime.datetime.now():%H:%M:%S} : Starting to create database.')
 
-    # build the blast db from the fasta we just streamed to disk
-    db_folder = db_folder.joinpath('db')
-    command = f'makeblastdb -in {temp_fasta} -title db -dbtype nucl -out {db_folder}'
-    result = subprocess.run(command, shell=True)
-    if result.returncode != 0:
-        # os.system() swallowed failures silently -- surface them instead
-        st.write(f'{datetime.datetime.now():%H:%M:%S} : makeblastdb failed with exit code {result.returncode}.')
-
-    # delete tmp fasta now that the blast db has been built from it
-    if temp_fasta.exists():
-        os.remove(temp_fasta)
-
-    # zip the finished db folder
-    output = Path(output_path).joinpath(f'db_{db_name}')
-    shutil.make_archive(output, 'zip', output)
+    # build one blast db per marker (+ all markers)
+    for name in db_names:
+        if n_written[name] == 0:
+            # marker not present in this snapshot: remove the empty files
+            st.write(f'{datetime.datetime.now():%H:%M:%S} : No sequences for {name} - skipping.')
+            os.remove(temp_fastas[name])
+            shutil.rmtree(db_folders[name])
+            continue
+        st.write(f'{datetime.datetime.now():%H:%M:%S} : Creating database "{db_folders[name].name}" ({n_written[name]:,} sequences).')
+        make_blast_db(temp_fastas[name], db_folders[name], citation)
 
     st.write(f'{datetime.datetime.now():%H:%M:%S} : Finished database creation.')
 
+    return db_folders['all'].joinpath('db')
+
+
+# ITS plant DB
+
+def run_ITS2(output_path, fasta_file, citation=citation_its2):
+    st.write('{} : Starting to collect taxonomy from fasta files.'.format(datetime.datetime.now().strftime('%H:%M:%S')))
+
+    ## collect accession numbers
+    ## directly also create a tmp fasta file
+    # create tmp file
+    temp_fasta = Path(Path(fasta_file).name.replace('.fasta.gz', '.fasta'))
+    res = []
+    all_IDs = set()
+    tmp_f = open(temp_fasta, 'w')
+    with gzip.open(fasta_file, 'rt') as handle:
+        for header, sequence in SimpleFastaParser(handle):
+            seq_list = header.split()[0].split(';')
+            ID = seq_list[0]
+            if ID not in all_IDs:
+                all_IDs.add(ID)
+                s = seq_list[1]
+                taxa = [t.split(':')[1].replace('_', ' ') for t in s.replace('tax=', '').split(',')]
+                res.append([ID] + taxa)
+                tmp_f.write(f'>{ID}\n')
+                tmp_f.write(f'{sequence}\n')
+    tmp_f.close()
+    accession_df = pd.DataFrame(res,
+                                columns=['Accession', 'superkingdom', 'phylum', 'class', 'order', 'family', 'genus',
+                                         'species'])
+
+    st.write('{} : Starting to create database.'.format(datetime.datetime.now().strftime('%H:%M:%S')))
+
+    # create database
+    db_name = Path(fasta_file).name.replace('.fasta.gz', '').replace('.', '_')
+    db_folder = Path(output_path).joinpath(f'db_{db_name}')
+
+    # create db
+    if not os.path.isdir(db_folder):
+        os.mkdir(db_folder)
+    db_folder = db_folder.joinpath('db')
+    command = f'makeblastdb -in {temp_fasta} -title db -dbtype nucl -out {db_folder}'
+    os.system(command)
+    # delete tmp file
+    if temp_fasta.exists():
+        os.remove(temp_fasta)
+
+    # write taxonomy file
+    taxonomy_file_snappy = db_folder.parent.joinpath('db_taxonomy.parquet.snappy')
+    accession_df.to_parquet(taxonomy_file_snappy)
+
+    ## zip the folder
+    output = Path(output_path).joinpath(f'db_{db_name}')
+    write_citation(output, citation)
+    shutil.make_archive(output, 'zip', output)
+
+    st.write('{} : Finished database creation.'.format(datetime.datetime.now().strftime('%H:%M:%S')))
+
     return db_folder
+
 
 ### GENERAL FUNCTIONS
 
@@ -906,6 +1235,7 @@ def zip_to_gz(fasta_file):
 
     return gz_path
 
+
 def open_folder(folder_path):
     # Get the current operating system
     current_os = platform.system()
@@ -921,6 +1251,7 @@ def open_folder(folder_path):
     except Exception as e:
         st.write(f"Failed to open folder: {e}")
 
+
 def open_file(path: Path):
     path = str(path)
     if platform.system() == "Darwin":
@@ -930,8 +1261,8 @@ def open_file(path: Path):
     else:
         subprocess.run(["xdg-open", path])
 
-def validation():
 
+def validation():
     all_dbs = [Path(i) for i in glob.glob('/Volumes/Coruscant/APSCALE_projects/APSCALE_databases_input/*.fasta.gz')]
     output_fasta = Path('/Volumes/Coruscant/APSCALE_projects/APSCALE_databases_input/combined_first_reads.fasta')
     max_seqs_per_file = 4
@@ -955,10 +1286,11 @@ def validation():
         command = f'apscale_blast -q {query} -db {db_path} -o {out_path}'
         os.system(command)
 
+
 ### STREAMLIT FUNCTIONS
 
-def create_dropdown(title, description, icon, filetype, run_function, working_dir, input_folder, weblink, downloadlink, example_file_name):
-
+def create_dropdown(title, description, icon, filetype, run_function, working_dir, input_folder, weblink, downloadlink,
+                    example_file_name):
     with st.expander(f"{icon} {title}", expanded=False):
         st.markdown(f"**{description}**")
         st.write("")
@@ -978,21 +1310,24 @@ def create_dropdown(title, description, icon, filetype, run_function, working_di
             # load real files WITHOUT modifying filenames
             file_names = sorted(glob.glob(str(input_folder / f'*{filetype}*')))
             file_names_dict = {Path(i).name: Path(i) for i in file_names}
-            selected_file_key = st.selectbox(f"Select a database file ({filetype}):", list(file_names_dict.keys()), key=f"{title}_db_file")
+            selected_file_key = st.selectbox(f"Select a database file ({filetype}):", list(file_names_dict.keys()),
+                                             key=f"{title}_db_file")
 
             # create database
             if selected_file_key != None:
                 selected_file = file_names_dict[selected_file_key]
                 if st.button(f"⚙️ Create {title} database", key=f"create_{title}", width='stretch', type='primary'):
                     if selected_file.suffix == '.zip':
-                        st.write('{}: Converting .zip to .gz format.'.format(datetime.datetime.now().strftime('%H:%M:%S')))
+                        st.write(
+                            '{}: Converting .zip to .gz format.'.format(datetime.datetime.now().strftime('%H:%M:%S')))
                         selected_file = zip_to_gz(selected_file)
                     db_path = run_function(working_dir, str(selected_file))
                     check_blast_db(db_path)
         st.write("___")
 
-def create_dropdown_silva(title, description, icon, filetype, run_function, working_dir, input_folder, weblink, downloadlink, example_file_name, example_file_name_tax):
 
+def create_dropdown_silva(title, description, icon, filetype, run_function, working_dir, input_folder, weblink,
+                          downloadlink, example_file_name, example_file_name_tax):
     with st.expander(f"{icon} {title}", expanded=False):
         st.markdown(f"**{description}**")
         st.write("")
@@ -1015,12 +1350,14 @@ def create_dropdown_silva(title, description, icon, filetype, run_function, work
             # load real files WITHOUT modifying filenames
             file_names = sorted(glob.glob(str(input_folder / f'*{filetype}*')))
             file_names_dict = {Path(i).name: Path(i) for i in file_names}
-            selected_file_key = st.selectbox(f"Select a database file ({filetype}):", list(file_names_dict.keys()), key=f"{title}_db_file")
+            selected_file_key = st.selectbox(f"Select a database file ({filetype}):", list(file_names_dict.keys()),
+                                             key=f"{title}_db_file")
 
             # load real files WITHOUT modifying filenames
-            file_names_tax = sorted(glob.glob(str(input_folder / f'tax_slv_ssu_*.acc_taxid.gz')))
+            file_names_tax = sorted(glob.glob(str(input_folder / f'taxmap_slv_ssu_parc_*.txt.gz')))
             file_names_dict_tax = {Path(i).name: Path(i) for i in file_names_tax}
-            selected_tax_file_key = st.selectbox("Select a taxonomy file (.txt.gz):", list(file_names_dict_tax.keys()), key=f"{title}_tax_file")
+            selected_tax_file_key = st.selectbox("Select a taxonomy file (.txt.gz):", list(file_names_dict_tax.keys()),
+                                                 key=f"{title}_tax_file")
 
             # create database
             if selected_file_key != None and selected_tax_file_key != None:
@@ -1029,14 +1366,15 @@ def create_dropdown_silva(title, description, icon, filetype, run_function, work
                 selected_tax_file = file_names_dict_tax[selected_tax_file_key]
                 if st.button(f"⚙️ Create {title} database", key=f"create_{title}", width='stretch', type='primary'):
                     if selected_file.suffix == '.zip':
-                        st.write('{}: Converting .zip to .gz format.'.format(datetime.datetime.now().strftime('%H:%M:%S')))
+                        st.write(
+                            '{}: Converting .zip to .gz format.'.format(datetime.datetime.now().strftime('%H:%M:%S')))
                         selected_file = zip_to_gz(selected_file)
                     db_path = run_function(working_dir, str(selected_file), str(selected_tax_file))
                     check_blast_db(db_path)
         st.write("___")
 
-def create_dropdown_custom(title, description, icon, filetype, run_function, working_dir, input_folder):
 
+def create_dropdown_custom(title, description, icon, filetype, run_function, working_dir, input_folder):
     with st.expander(f"{icon} {title}", expanded=False):
         st.markdown(f"**{description}**")
         st.write("")
@@ -1049,15 +1387,17 @@ def create_dropdown_custom(title, description, icon, filetype, run_function, wor
                 webbrowser.open("https://github.com/TillMacher/apscale_blast")
             if st.button(f"📝 Create Template Excel File", key=f"excel_example_{title}", width='stretch'):
                 row = [['JFKC01000052.336.3179',
-                          'Bacteria',
-                          'Pseudomonadota',
-                          'Alphaproteobacteria',
-                          'Rhodobacterales',
-                          'Roseobacteraceae',
-                          'Marivita',
-                          'Marivita geojedonensis',
-                           'ACGT']]
-                template_df = pd.DataFrame(row, columns=['Accession', 'superkingdom', 'phylum', 'class', 'order', 'family', 'genus', 'species', 'sequence'])
+                        'Bacteria',
+                        'Pseudomonadota',
+                        'Alphaproteobacteria',
+                        'Rhodobacterales',
+                        'Roseobacteraceae',
+                        'Marivita',
+                        'Marivita geojedonensis',
+                        'ACGT']]
+                template_df = pd.DataFrame(row,
+                                           columns=['Accession', 'superkingdom', 'phylum', 'class', 'order', 'family',
+                                                    'genus', 'species', 'sequence'])
                 template_xlsx = input_folder / 'custom_import_template.xlsx'
                 template_df.to_excel(template_xlsx, index=False)
                 open_file((template_xlsx))
@@ -1068,7 +1408,8 @@ def create_dropdown_custom(title, description, icon, filetype, run_function, wor
                 f.write(f'>Accession;;JFKC01000052.336.3179\n')
                 f.write(f'ACGT\n')
                 # Custom taxonomy
-                f.write('>Taxonomy;;Bacteria;;Pseudomonadota;;Alphaproteobacteria;;Rhodobacterales;;Roseobacteraceae;;Marivita;;Marivita geojedonensis\n')
+                f.write(
+                    '>Taxonomy;;Bacteria;;Pseudomonadota;;Alphaproteobacteria;;Rhodobacterales;;Roseobacteraceae;;Marivita;;Marivita geojedonensis\n')
                 f.write(f'ACGT\n')
                 f.close()
                 open_file(template_fasta)
@@ -1078,15 +1419,18 @@ def create_dropdown_custom(title, description, icon, filetype, run_function, wor
             # load real files WITHOUT modifying filenames
             file_names = sorted(glob.glob(str(input_folder / f'*{filetype}*')))
             file_names_dict = {Path(i).name: Path(i) for i in file_names}
-            selected_file_key = st.selectbox("Select a database file:", list(file_names_dict.keys()), key=f"{title}_db_file")
+            selected_file_key = st.selectbox("Select a database file:", list(file_names_dict.keys()),
+                                             key=f"{title}_db_file")
+            citation = st.text_area("Citation and license text (written to citation.txt):", key=f"{title}_citation")
 
             # create database
             if selected_file_key != None:
                 selected_file = file_names_dict[selected_file_key]
                 if st.button(f"⚙️ Create {title}", key=f"create_{title}", width='stretch', type='primary'):
-                    db_path = run_custom_db(working_dir, str(selected_file), selected_file.suffix)
+                    db_path = run_custom_db(working_dir, str(selected_file), selected_file.suffix, citation)
                     check_blast_db(db_path)
         st.write("___")
+
 
 ########################################################################################################################
 ########################################################################################################################
@@ -1132,7 +1476,8 @@ colored_header(
     color_name="blue-70")
 
 # --- Email input ---
-usermail = st.text_input(label="📧 Enter your email address for NCBI (required):", key="usermail", placeholder="your.name@email.com")
+usermail = st.text_input(label="📧 Enter your email address for NCBI (required):", key="usermail",
+                         placeholder="your.name@email.com")
 if usermail:
     Entrez.email = usermail
 
@@ -1147,7 +1492,7 @@ else:
         "📦 Download size: ~150–300 MB\n"
         "💾 Disk usage after extraction: ~300–600 MB\n\n"
         "The download is performed once and reused automatically."
-            )
+    )
     if st.button("⬇️ Download NCBI Taxonomy Database"):
         if not usermail:
             st.warning("Please provide your email address before downloading (NCBI requirement).")
@@ -1224,17 +1569,17 @@ else:
                         )
 
         create_dropdown_silva("SILVA",
-                        "Comprehensive ribosomal RNA database (16S/18S).",
-                        "🟫",
-                        ".fasta",
-                        run_silva,
-                        working_dir,
-                        input_folder,
-                        "https://www.arb-silva.de/",
-                        "https://www.arb-silva.de/current-release/Exports",
-                        "SILVA_144_SSURef_tax_silva_trunc.fasta.gz",
-                        "tax_slv_ssu_144.acc_taxid.gz"
-                        )
+                              "Comprehensive ribosomal RNA database (16S/18S).",
+                              "🟫",
+                              ".fasta",
+                              run_silva,
+                              working_dir,
+                              input_folder,
+                              "https://www.arb-silva.de/",
+                              "https://www.arb-silva.de/current-release/Exports",
+                              "SILVA_144_SSURef_tax_silva_trunc.fasta.gz",
+                              "taxmap_slv_ssu_parc_144.txt.gz"
+                              )
 
         create_dropdown("trnL",
                         "Plant chloroplast trnL reference database.",
@@ -1246,6 +1591,18 @@ else:
                         "https://ucedna.com/reference-databases-for-metabarcoding",
                         "https://ucla.app.box.com/s/n4hbocub5pdoffdtcfv1tdjr7cl4cc1n",
                         "trnL.fasta.gz"
+                        )
+
+        create_dropdown("ITS2",
+                        "Plant ITS2 reference database.",
+                        "🌿",
+                        ".fasta",
+                        run_ITS2,
+                        working_dir,
+                        input_folder,
+                        "https://www.nature.com/articles/s41597-024-02962-5",
+                        "https://research.wur.nl/en/datasets/its2-global-database/",
+                        "ITS2.fasta.gz"
                         )
 
         create_dropdown("UNITE",
@@ -1273,10 +1630,10 @@ else:
                         )
 
         create_dropdown_custom("Custom APSCALE database",
-                        "Import your own sequences from .fasta or .xlsx files.",
-                        "🧬",
-                        "",
-                        run_custom_db,
-                        working_dir,
-                        input_folder,
-                        )
+                               "Import your own sequences from .fasta or .xlsx files.",
+                               "🧬",
+                               "",
+                               run_custom_db,
+                               working_dir,
+                               input_folder,
+                               )

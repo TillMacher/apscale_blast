@@ -31,9 +31,10 @@ def accession2taxonomy(df_1, taxid_df, col_names_2, db_name):
     Convert accession IDs to taxonomy information.
     """
 
-    # file = '/Volumes/Coruscant/APSCALE_projects/APSCALE_databases_input/blast_test/BOLD/subsets/subset_1_megablast.csv'
+    # file = '/Users/tillmacher/Downloads/2026_test/subsets/subset_1_megablast.csv'
+    # col_names = ['unique ID', 'Sequence ID', 'Similarity', 'evalue']
     # df_1 = pd.read_csv(file, header=None, sep=';;', names=col_names, engine='python').fillna('NAN')
-    # taxid_df = pd.read_parquet('/Volumes/Coruscant/APSCALE_projects/APSCALE_databases/db_BOLD_Public_30-Jun-2026/db_taxonomy.parquet.snappy')
+    # taxid_df = pd.read_parquet('/Users/tillmacher/Downloads/18S_fungal_sequences/db_taxonomy.parquet.snappy')
 
     df_2_list = []
     cols = taxid_df.columns.tolist()
@@ -50,7 +51,7 @@ def accession2taxonomy(df_1, taxid_df, col_names_2, db_name):
             try:
                 taxonomy = taxid_df[taxid_df['Accession'].str.startswith(accession[:30])][levels].values.tolist()[0]
             except:
-                taxonomy = ['Missing-Accession'] * 7
+                taxonomy = [f'Missing-Accession: {accession}'] * 7
 
         if 'rating' in cols:
             rating = taxid_df[taxid_df['Accession'] == accession]['rating'].values.tolist()
@@ -61,7 +62,67 @@ def accession2taxonomy(df_1, taxid_df, col_names_2, db_name):
     df_2 = pd.DataFrame(df_2_list, columns=col_names_2 + ['rating', 'accession'])
     return df_2
 
-def filter_blastn_csvs(file, taxid_df, i, n_subsets, thresholds, db_name, filter_mode, rating_range, sim_range, n_jobs):
+def load_thresholds(blastn_database, thresholds, threshold_level, min_n=50):
+    """
+    Thresholds for the similarity trimming (species, genus, family, order, class).
+    1) Comma-separated list (-thresholds): used for all ESVs
+    2) db_thresholds.xlsx of the database: "All", or taxon-specific (e.g. per class) with -threshold_level
+       Taxa whose thresholds are based on less than min_n sequences use "All".
+    3) No db_thresholds.xlsx: default list
+    Returns: dict (name -> 5 thresholds), the taxonomic level (or None) and the name of the default thresholds
+    """
+    default_thresholds = '98,95,90,87,85'
+    thresholds_xlsx = Path(blastn_database).joinpath('db_thresholds.xlsx')
+    levels = ['species', 'genus', 'family', 'order', 'class']
+
+    # 1) + 3) Comma-separated list
+    if thresholds or not thresholds_xlsx.exists():
+        if not thresholds:
+            print('{}: No db_thresholds.xlsx found - using the default thresholds.'.format(datetime.datetime.now().strftime('%H:%M:%S')))
+            thresholds = default_thresholds
+        values = thresholds.split(',')
+        if len(values) != 5:
+            print('Please provide 5 comma-separated threshold values!')
+            print('Using default values...')
+            values = default_thresholds.split(',')
+        print('{}: Using thresholds: {}'.format(datetime.datetime.now().strftime('%H:%M:%S'), ','.join(values)))
+        return {'List': [float(i) for i in values]}, None, 'List'
+
+    # 2) db_thresholds.xlsx
+    table = pd.read_excel(thresholds_xlsx, sheet_name=0).fillna('')
+    all_row = table[table['Taxon'] == 'All'].iloc[0]
+    threshold_dict = {'All': [float(all_row[level]) for level in levels]}
+    print('{}: Using db_thresholds.xlsx (All: {})'.format(datetime.datetime.now().strftime('%H:%M:%S'),
+                                                         ','.join([str(i) for i in threshold_dict['All']])))
+    if threshold_level == 'all':
+        return threshold_dict, None, 'All'
+
+    # Taxon-specific thresholds (only taxa based on at least min_n sequences)
+    level_rows = table[table['Level'] == threshold_level]
+    level_rows_ok = level_rows[level_rows['n queries'] >= min_n]
+    if len(level_rows_ok) == 0:
+        print('{}: No {} thresholds (>= {} sequences) in db_thresholds.xlsx - using "All".'.format(
+            datetime.datetime.now().strftime('%H:%M:%S'), threshold_level, min_n))
+        return threshold_dict, None, 'All'
+    for _, row in level_rows_ok.iterrows():
+        threshold_dict[row['Taxon']] = [float(row[level]) for level in levels]
+    print('{}: Using {} {}-specific thresholds ({} taxa with < {} sequences use "All").'.format(
+        datetime.datetime.now().strftime('%H:%M:%S'), len(level_rows_ok), threshold_level,
+        len(level_rows) - len(level_rows_ok), min_n))
+    return threshold_dict, threshold_level, 'All'
+
+def choose_thresholds(df_2, threshold_dict, threshold_level, default_name):
+    """
+    Thresholds for one ESV: taxon-specific if all hits belong to one taxon of the chosen level (e.g. one class)
+    and this taxon has its own thresholds; otherwise the default thresholds ("All" or "List").
+    """
+    if threshold_level is not None:
+        taxa = [i for i in df_2[threshold_level.capitalize()].unique() if i != '']
+        if len(taxa) == 1 and taxa[0] in threshold_dict:
+            return threshold_dict[taxa[0]], f'{threshold_level}: {taxa[0]}'
+    return threshold_dict[default_name], default_name
+
+def filter_blastn_csvs(file, taxid_df, i, n_subsets, threshold_dict, threshold_level, default_name, db_name, filter_mode, rating_range, sim_range, n_jobs):
     """
     Filter BLASTn results from CSV files.
     """
@@ -89,23 +150,11 @@ def filter_blastn_csvs(file, taxid_df, i, n_subsets, thresholds, db_name, filter
         print('{}: Error during filtering for subset {}/{}.'.format(datetime.datetime.now().strftime('%H:%M:%S'), i + 1, n_subsets))
         return
 
-    thresholds = thresholds.split(',')
-    # Ensure correct number of thresholds
-    if len(thresholds) != 5:
-        print('Please provide 5 comma-separated threshold values!')
-        print('Using default values...')
-        thresholds = ['97', '95', '90', '87', '85']
-
-    species_threshold = int(thresholds[0])
-    genus_threshold = int(thresholds[1])
-    family_threshold = int(thresholds[2])
-    order_threshold = int(thresholds[3])
-    class_threshold = int(thresholds[4])
-
     ## filter hits
     ID_set = csv_df['unique ID'].drop_duplicates().values.tolist()
     col_names_2 = ['unique ID', 'Kingdom', 'Phylum', 'Class', 'Order', 'Family', 'Genus', 'Species', 'Similarity', 'evalue']
     taxonomy_df = pd.DataFrame()
+    thresholds_used = {}  # unique ID -> name of the thresholds used for this ESV
 
     # loop through IDs
     # ID = "OTU_39"
@@ -116,7 +165,7 @@ def filter_blastn_csvs(file, taxid_df, i, n_subsets, thresholds, db_name, filter
 
         ##### 1) FILTERING BY SIMILARITY THEN BY EVALUE (or the other way round, let the user decide)
         filter_mode = int(filter_mode)
-        sim_range = int(sim_range)
+        sim_range = float(sim_range)
         if filter_mode == 1:
             max_sim = max(df_0['Similarity'])
             sim_cut = max_sim - sim_range
@@ -161,6 +210,11 @@ def filter_blastn_csvs(file, taxid_df, i, n_subsets, thresholds, db_name, filter
 
         ############################################################################################################
         ##### 2) ROBUSTNESS TRIMMING BY SIMILARITY
+
+        # Thresholds for this ESV ("All", "List", or taxon-specific, e.g. for its class)
+        thresholds, thresholds_name = choose_thresholds(df_2, threshold_dict, threshold_level, default_name)
+        species_threshold, genus_threshold, family_threshold, order_threshold, class_threshold = thresholds
+        thresholds_used[ID] = thresholds_name
 
         if max_sim >= species_threshold:
             pass
@@ -264,6 +318,7 @@ def filter_blastn_csvs(file, taxid_df, i, n_subsets, thresholds, db_name, filter
 
     # export dataframe
     taxonomy_df.columns = ['unique ID', 'Kingdom', 'Phylum', 'Class', 'Order', 'Family', 'Genus', 'Species', 'Similarity', 'E-value', 'Rating', 'Flag', 'Ambiguous taxa', 'Rating drop']
+    taxonomy_df['Thresholds'] = taxonomy_df['unique ID'].map(thresholds_used)
 
     # Fix type problems before parquet export
     taxonomy_df['Rating'] = pd.to_numeric(taxonomy_df['Rating'], errors='coerce').astype('Int64')
@@ -274,7 +329,7 @@ def filter_blastn_csvs(file, taxid_df, i, n_subsets, thresholds, db_name, filter
     # final print
     print('{}: Finished filtering of subset {}/{}.'.format(datetime.datetime.now().strftime('%H:%M:%S'), i + 1, n_subsets))
 
-def main(blastn_folder, blastn_database, thresholds, n_cores, filter_mode, rating_range, sim_range):
+def main(blastn_folder, blastn_database, thresholds, n_cores, filter_mode, rating_range, sim_range, threshold_level='all'):
     """ Filter results according to Macher et al., 2023 (Fish Mock Community paper) """
 
     print('{}: Starting to filter blast results for \'{}\''.format(datetime.datetime.now().strftime('%H:%M:%S'), blastn_folder))
@@ -285,9 +340,12 @@ def main(blastn_folder, blastn_database, thresholds, n_cores, filter_mode, ratin
     csv_files = glob.glob('{}/subsets/*.csv'.format(blastn_folder))
     all_ids = []
     for file in csv_files:
-        csv_df = pd.read_csv(file, header=None, sep=';;', engine='python').fillna('NAN')
-        ids = csv_df[1].unique().tolist()
-        all_ids.extend(ids)
+        try:
+            csv_df = pd.read_csv(file, header=None, sep=';;', engine='python').fillna('NAN')
+            ids = csv_df[1].unique().tolist()
+            all_ids.extend(ids)
+        except:
+            pass
     all_ids = list(set(all_ids))
 
     ## load taxid table
@@ -300,15 +358,18 @@ def main(blastn_folder, blastn_database, thresholds, n_cores, filter_mode, ratin
     ## collect name of database
     db_name = Path(blastn_database).stem
 
+    ## thresholds (list, or db_thresholds.xlsx of the database)
+    threshold_dict, threshold_level, default_name = load_thresholds(blastn_database, thresholds, threshold_level)
+
     # PARALLEL FILTER COMMAND
     n_subsets = len(csv_files)
     # file = csv_files[2]
     # i = 0
     print('{}: Filtering and flagging of {} files...'.format(datetime.datetime.now().strftime('%H:%M:%S'),  len(csv_files)))
-    Parallel(n_jobs=n_cores, backend='loky')(delayed(filter_blastn_csvs)(file, taxid_df, i, n_subsets, thresholds, db_name, filter_mode, rating_range, sim_range, n_cores) for i, file in enumerate(csv_files))
+    Parallel(n_jobs=n_cores, backend='loky')(delayed(filter_blastn_csvs)(file, taxid_df, i, n_subsets, threshold_dict, threshold_level, default_name, db_name, filter_mode, rating_range, sim_range, n_cores) for i, file in enumerate(csv_files))
 
     ## also already define the no match row
-    NoMatch = ['NoMatch'] * 7 + [0, 1, '', '']
+    NoMatch = ['NoMatch'] + [''] * 6 + [0, 1, '', '', '', '', '']
 
     # Get a list of all the xlsx files
     parquet_files = glob.glob('{}/subsets/*_filtered.parquet.snappy'.format(blastn_folder))
@@ -337,7 +398,7 @@ def main(blastn_folder, blastn_database, thresholds, n_cores, filter_mode, ratin
         merged_df = pd.concat(df_list, ignore_index=True)
         name = Path(blastn_folder).name
         blastn_filtered_xlsx = Path('{}/{}_taxonomy.xlsx'.format(blastn_folder, name))
-        blastn_filtered_parquet = Path('{}/{}_taxonomy.parquet.snappy'.format(blastn_folder, name))
+        blastn_filtered_csv= Path('{}/{}_taxonomy.csv'.format(blastn_folder, name))
 
         ## add OTUs without hit
         # Drop duplicates in the DataFrame
@@ -369,11 +430,8 @@ def main(blastn_folder, blastn_database, thresholds, n_cores, filter_mode, ratin
         try:
             output_df.to_excel(blastn_filtered_xlsx, sheet_name='Taxonomy table', index=False)
         except:
-            print(f'{datetime.datetime.now().strftime("%H:%M:%S")}: Unable to write to Excel.')
-        try:
-            output_df.to_parquet(blastn_filtered_parquet, compression='snappy')
-        except:
-            print(f'{datetime.datetime.now().strftime("%H:%M:%S")}: Unable to write to Parquet.')
+            print(f'{datetime.datetime.now().strftime("%H:%M:%S")}: Unable to write to Excel. Writing to .csv instead.')
+            output_df.to_csv(blastn_filtered_csv)
 
         print('{}: Finished to filter blast results for \'{}\''.format(datetime.datetime.now().strftime('%H:%M:%S'), blastn_folder))
 
