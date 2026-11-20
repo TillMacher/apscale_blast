@@ -22,13 +22,13 @@ With pip, [BLAST+](https://ftp.ncbi.nlm.nih.gov/blast/executables/blast+/LATEST/
 ## Usage
 
 ```
-# Taxonomic assignment[README.md](../apscale_gui/README.md)
+# Taxonomic assignment
 apscale_blast -db ./MIDORI2_srRNA_BLAST -q ./ESVs.fasta -o ./my_run
 
 # Re-BLAST sequences without a good match against a second database
 apscale_blast -db ./MIDORI2_srRNA_BLAST -db2 ./my_local_db -q ./ESVs.fasta -o ./my_run
 
-# Re-BLAST an existing result
+# Re-BLAST an existing result (results are saved next to the table as *_reblast.xlsx)
 apscale_blast -reblast_only ./my_run/my_run_taxonomy.xlsx -db2 ./my_local_db -q ./ESVs.fasta
 
 # Validate species assignments with GBIF occurrences (e.g. Germany, Luxembourg, France)
